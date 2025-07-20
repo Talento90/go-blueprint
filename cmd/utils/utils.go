@@ -5,9 +5,12 @@ package utils
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os/exec"
+	"regexp"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -46,14 +49,26 @@ func NonInteractiveCommand(use string, flagSet *pflag.FlagSet) string {
 	return nonInteractiveCommand
 }
 
+func RegisterStaticCompletions(cmd *cobra.Command, flag string, options []string) {
+	err := cmd.RegisterFlagCompletionFunc(flag, func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return options, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	if err != nil {
+		log.Printf("warning: could not register completion for --%s: %v", flag, err)
+	}
+}
+
 // ExecuteCmd provides a shorthand way to run a shell command
 func ExecuteCmd(name string, args []string, dir string) error {
 	command := exec.Command(name, args...)
 	command.Dir = dir
 	var out bytes.Buffer
+	var stdErr bytes.Buffer
 	command.Stdout = &out
+	command.Stderr = &stdErr
 	if err := command.Run(); err != nil {
-		return err
+		return fmt.Errorf("%v\n%v", err, stdErr.String())
 	}
 	return nil
 }
@@ -96,6 +111,19 @@ func GoFmt(appDir string) error {
 	return nil
 }
 
+// GoModReplace runs "go mod edit -replace" in the selected
+// replace_payload e.g: github.com/gocql/gocql=github.com/scylladb/gocql@v1.14.4
+func GoModReplace(appDir string, replace string) error {
+	if err := ExecuteCmd("go",
+		[]string{"mod", "edit", "-replace", replace},
+		appDir,
+	); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func GoTidy(appDir string) error {
 	err := ExecuteCmd("go", []string{"mod", "tidy"}, appDir)
 	if err != nil {
@@ -119,4 +147,18 @@ func CheckGitConfig(key string) (bool, error) {
 	}
 	// The command ran successfully, so the key is set.
 	return true, nil
+}
+
+// ValidateModuleName returns true if it's a valid module name.
+// It allows any number of / and . characters in between.
+func ValidateModuleName(moduleName string) bool {
+	matched, _ := regexp.MatchString("^[a-zA-Z0-9_-]+(?:[\\/.][a-zA-Z0-9_-]+)*$", moduleName)
+	return matched
+}
+
+// GetRootDir returns the project directory name from the module path.
+// Returns the last token by splitting the moduleName with /
+func GetRootDir(moduleName string) string {
+	tokens := strings.Split(moduleName, "/")
+	return tokens[len(tokens)-1]
 }

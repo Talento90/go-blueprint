@@ -21,7 +21,7 @@ theme:
   palette: 
     - scheme: default
       toggle:
-        icon: material/brightness-7 
+        icon: material/brightness-7
         name: Switch to dark mode
     - scheme: slate
       toggle:
@@ -45,12 +45,15 @@ nav:
     - Tailwind CSS: advanced-flag/tailwind.md
     - GoReleaser & GoTest CI: advanced-flag/goreleaser.md
     - Websocket: advanced-flag/websocket.md
+    - Docker: advanced-flag/docker.md
+    - React & Vite (TypeScript): advanced-flag/react-vite.md
   - Testing endpoints: 
     - Server: endpoints-test/server.md
     - DB Health Endpoints: 
        - SQL DBs: endpoints-test/sql.md
        - Redis: endpoints-test/redis.md
        - MongoDB: endpoints-test/mongo.md
+       - ScyllaDB: endpoints-test/scylladb.md
     - Websocket: endpoints-test/websocket.md
     - Web Endpoint: endpoints-test/web.md
 
@@ -70,4 +73,4 @@ extra:
         name: Twitter
     generator: false
 
-copyright: Copyright &copy; 2024 Melkey
+copyright: Copyright &copy; 2025 Melkey

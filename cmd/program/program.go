@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"text/template"
 
@@ -19,7 +21,6 @@ import (
 	"github.com/melkeydev/go-blueprint/cmd/template/docker"
 	"github.com/melkeydev/go-blueprint/cmd/template/framework"
 	"github.com/melkeydev/go-blueprint/cmd/utils"
-	"github.com/spf13/cobra"
 )
 
 // A Project contains the data for the project folder
@@ -36,6 +37,8 @@ type Project struct {
 	DockerMap         map[flags.Database]Docker
 	AdvancedOptions   map[string]bool
 	AdvancedTemplates AdvancedTemplates
+	GitOptions        flags.Git
+	OSCheck           map[string]bool
 }
 
 type AdvancedTemplates struct {
@@ -75,6 +78,7 @@ type Templater interface {
 type DBDriverTemplater interface {
 	Service() []byte
 	Env() []byte
+	Tests() []byte
 }
 
 type DockerTemplater interface {
@@ -96,10 +100,12 @@ var (
 	echoPackage    = []string{"github.com/labstack/echo/v4", "github.com/labstack/echo/v4/middleware"}
 
 	mysqlDriver    = []string{"github.com/go-sql-driver/mysql"}
-	postgresDriver = []string{"github.com/lib/pq"}
+	postgresDriver = []string{"github.com/jackc/pgx/v5/stdlib"}
 	sqliteDriver   = []string{"github.com/mattn/go-sqlite3"}
 	redisDriver    = []string{"github.com/redis/go-redis/v9"}
 	mongoDriver    = []string{"go.mongodb.org/mongo-driver"}
+	gocqlDriver    = []string{"github.com/gocql/gocql"}
+	scyllaDriver   = "github.com/scylladb/gocql@v1.14.4" // Replacement for GoCQL
 
 	godotenvPackage = []string{"github.com/joho/godotenv"}
 	templPackage    = []string{"github.com/a-h/templ"}
@@ -112,8 +118,23 @@ const (
 	internalServerPath   = "internal/server"
 	internalDatabasePath = "internal/database"
 	gitHubActionPath     = ".github/workflows"
-	testHandlerPath      = "tests"
 )
+
+// CheckOs checks Operation system and generates MakeFile and `go build` command
+// Based on Project.Unixbase
+func (p *Project) CheckOS() {
+	p.OSCheck = make(map[string]bool)
+
+	if runtime.GOOS != "windows" {
+		p.OSCheck["UnixBased"] = true
+	}
+	if runtime.GOOS == "linux" {
+		p.OSCheck["linux"] = true
+	}
+	if runtime.GOOS == "darwin" {
+		p.OSCheck["darwin"] = true
+	}
+}
 
 // ExitCLI checks if the Project has been exited, and closes
 // out of the CLI if it has
@@ -187,6 +208,11 @@ func (p *Project) createDBDriverMap() {
 		packageName: redisDriver,
 		templater:   dbdriver.RedisTemplate{},
 	}
+
+	p.DBDriverMap[flags.Scylla] = Driver{
+		packageName: gocqlDriver,
+		templater:   dbdriver.ScyllaTemplate{},
+	}
 }
 
 func (p *Project) createDockerMap() {
@@ -208,6 +234,10 @@ func (p *Project) createDockerMap() {
 		packageName: []string{},
 		templater:   docker.RedisDockerTemplate{},
 	}
+	p.DockerMap[flags.Scylla] = Docker{
+		packageName: []string{},
+		templater:   docker.ScyllaDockerTemplate{},
+	}
 }
 
 // CreateMainFile creates the project folders and files,
@@ -222,31 +252,24 @@ func (p *Project) CreateMainFile() error {
 		}
 	}
 
-	nameSet, err := utils.CheckGitConfig("user.name")
-	if err != nil {
-		cobra.CheckErr(err)
-	}
-	if !nameSet {
-		fmt.Println("user.name is not set in git config.")
-		fmt.Println("Please set up git config before trying again.")
-		panic("\nGIT CONFIG ISSUE: user.name is not set in git config.\n")
-	}
-
 	// Check if user.email is set.
-	emailSet, err := utils.CheckGitConfig("user.email")
-	if err != nil {
-		cobra.CheckErr(err)
-	}
-	if !emailSet {
-		fmt.Println("user.email is not set in git config.")
-		fmt.Println("Please set up git config before trying again.")
-		panic("\nGIT CONFIG ISSUE: user.email is not set in git config.\n")
+	if p.GitOptions.String() != flags.Skip {
+
+		emailSet, err := utils.CheckGitConfig("user.email")
+		if err != nil {
+			return err
+		}
+		if !emailSet {
+			fmt.Println("user.email is not set in git config.")
+			fmt.Println("Please set up git config before trying again.")
+			panic("\nGIT CONFIG ISSUE: user.email is not set in git config.\n")
+		}
 	}
 
 	p.ProjectName = strings.TrimSpace(p.ProjectName)
 
 	// Create a new directory with the project name
-	projectPath := filepath.Join(p.AbsolutePath, p.ProjectName)
+	projectPath := filepath.Join(p.AbsolutePath, utils.GetRootDir(p.ProjectName))
 	if _, err := os.Stat(projectPath); os.IsNotExist(err) {
 		err := os.MkdirAll(projectPath, 0o751)
 		if err != nil {
@@ -255,22 +278,25 @@ func (p *Project) CreateMainFile() error {
 		}
 	}
 
+	// Define Operating system
+	p.CheckOS()
+
 	// Create the map for our program
 	p.createFrameworkMap()
 
 	// Create go.mod
-	err = utils.InitGoMod(p.ProjectName, projectPath)
+	err := utils.InitGoMod(p.ProjectName, projectPath)
 	if err != nil {
 		log.Printf("Could not initialize go.mod in new project %v\n", err)
-		cobra.CheckErr(err)
+		return err
 	}
 
 	// Install the correct package for the selected framework
 	if p.ProjectType != flags.StandardLibrary {
 		err = utils.GoGetPackage(projectPath, p.FrameworkMap[p.ProjectType].packageName)
 		if err != nil {
-			log.Printf("Could not install go dependency for the chosen framework %v\n", err)
-			cobra.CheckErr(err)
+			log.Println("Could not install go dependency for the chosen framework")
+			return err
 		}
 	}
 
@@ -279,22 +305,28 @@ func (p *Project) CreateMainFile() error {
 		p.createDBDriverMap()
 		err = utils.GoGetPackage(projectPath, p.DBDriverMap[p.DBDriver].packageName)
 		if err != nil {
-			log.Printf("Could not install go dependency for chosen driver %v\n", err)
-			cobra.CheckErr(err)
+			log.Println("Could not install go dependency for chosen driver")
+			return err
 		}
 
 		err = p.CreatePath(internalDatabasePath, projectPath)
 		if err != nil {
 			log.Printf("Error creating path: %s", internalDatabasePath)
-			cobra.CheckErr(err)
 			return err
 		}
 
 		err = p.CreateFileWithInjection(internalDatabasePath, projectPath, "database.go", "database")
 		if err != nil {
 			log.Printf("Error injecting database.go file: %v", err)
-			cobra.CheckErr(err)
 			return err
+		}
+
+		if p.DBDriver != "sqlite" {
+			err = p.CreateFileWithInjection(internalDatabasePath, projectPath, "database_test.go", "integration-tests")
+			if err != nil {
+				log.Printf("Error injecting database_test.go file: %v", err)
+				return err
+			}
 		}
 	}
 
@@ -307,74 +339,57 @@ func (p *Project) CreateMainFile() error {
 			err = p.CreateFileWithInjection(root, projectPath, "docker-compose.yml", "db-docker")
 			if err != nil {
 				log.Printf("Error injecting docker-compose.yml file: %v", err)
-				cobra.CheckErr(err)
 				return err
 			}
 		} else {
-			fmt.Println(" We are unable to create docker-compose.yml file for an SQLite database")
+			fmt.Println(" SQLite doesn't support docker-compose.yml configuration")
 		}
 	}
 
 	// Install the godotenv package
 	err = utils.GoGetPackage(projectPath, godotenvPackage)
 	if err != nil {
-		log.Printf("Could not install go dependency %v\n", err)
-		cobra.CheckErr(err)
+		log.Println("Could not install go dependency")
+
+		return err
+	}
+
+	if p.DBDriver == flags.Scylla {
+		replace := fmt.Sprintf("%s=%s", gocqlDriver[0], scyllaDriver)
+		err = utils.GoModReplace(projectPath, replace)
+		if err != nil {
+			log.Printf("Could not replace go dependency %v\n", err)
+			return err
+		}
 	}
 
 	err = p.CreatePath(cmdApiPath, projectPath)
 	if err != nil {
 		log.Printf("Error creating path: %s", projectPath)
-		cobra.CheckErr(err)
 		return err
 	}
 
 	err = p.CreateFileWithInjection(cmdApiPath, projectPath, "main.go", "main")
 	if err != nil {
-		cobra.CheckErr(err)
-		return err
-	}
-
-	err = p.CreatePath(testHandlerPath, projectPath)
-	if err != nil {
-		log.Printf("Error creating path: %s", projectPath)
-		cobra.CheckErr(err)
-		return err
-	}
-	// inject testhandler template
-	err = p.CreateFileWithInjection(testHandlerPath, projectPath, "handler_test.go", "tests")
-	if err != nil {
-		cobra.CheckErr(err)
 		return err
 	}
 
 	makeFile, err := os.Create(filepath.Join(projectPath, "Makefile"))
 	if err != nil {
-		cobra.CheckErr(err)
 		return err
 	}
 
 	defer makeFile.Close()
 
-	if p.DBDriver == "sqlite" || p.DBDriver == "none" {
-		// inject makefile template
-		makeFileTemplate := template.Must(template.New("makefile").Parse(string(framework.NonDbMakeFileTemplate())))
-		err = makeFileTemplate.Execute(makeFile, p)
-		if err != nil {
-			return err
-		}
-	} else {
-		// inject makefile template for database excluding sqlite
-		makeFileTemplate := template.Must(template.New("makefile").Parse(string(framework.MakeTemplate())))
-		err = makeFileTemplate.Execute(makeFile, p)
-		if err != nil {
-			return err
-		}
+	// inject makefile template
+	makeFileTemplate := template.Must(template.New("makefile").Parse(string(framework.MakeTemplate())))
+	err = makeFileTemplate.Execute(makeFile, p)
+	if err != nil {
+		return err
 	}
 
 	readmeFile, err := os.Create(filepath.Join(projectPath, "README.md"))
 	if err != nil {
-		cobra.CheckErr(err)
 		return err
 	}
 	defer readmeFile.Close()
@@ -389,46 +404,49 @@ func (p *Project) CreateMainFile() error {
 	err = p.CreatePath(internalServerPath, projectPath)
 	if err != nil {
 		log.Printf("Error creating path: %s", internalServerPath)
-		cobra.CheckErr(err)
 		return err
+	}
+
+	if p.AdvancedOptions[string(flags.React)] {
+		// deselect htmx option automatically since react is selected
+		p.AdvancedOptions[string(flags.Htmx)] = false
+		if err := p.CreateViteReactProject(projectPath); err != nil {
+			return fmt.Errorf("failed to set up React project: %w", err)
+		}
+
+		// if everything went smoothly, remove tailwing flag option
+		p.AdvancedOptions[string(flags.Tailwind)] = false
 	}
 
 	if p.AdvancedOptions[string(flags.Tailwind)] {
 		// select htmx option automatically since tailwind is selected
 		p.AdvancedOptions[string(flags.Htmx)] = true
 
-		tailwindConfigFile, err := os.Create(fmt.Sprintf("%s/tailwind.config.js", projectPath))
-		if err != nil {
-			cobra.CheckErr(err)
-		}
-		defer tailwindConfigFile.Close()
-
-		tailwindConfigTemplate := advanced.TailwindConfigTemplate()
-		err = os.WriteFile(fmt.Sprintf("%s/tailwind.config.js", projectPath), tailwindConfigTemplate, 0o644)
+		err = os.MkdirAll(fmt.Sprintf("%s/%s/assets/css", projectPath, cmdWebPath), 0o755)
 		if err != nil {
 			return err
 		}
 
-		err = os.MkdirAll(fmt.Sprintf("%s/%s/assets/css", projectPath, cmdWebPath), 0o755)
+		err = os.MkdirAll(fmt.Sprintf("%s/%s/styles", projectPath, cmdWebPath), 0o755)
 		if err != nil {
-			cobra.CheckErr(err)
+			return fmt.Errorf("failed to create styles directory: %w", err)
 		}
 
-		inputCssFile, err := os.Create(fmt.Sprintf("%s/%s/assets/css/input.css", projectPath, cmdWebPath))
+		inputCssFile, err := os.Create(fmt.Sprintf("%s/%s/styles/input.css", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer inputCssFile.Close()
 
 		inputCssTemplate := advanced.InputCssTemplate()
-		err = os.WriteFile(fmt.Sprintf("%s/%s/assets/css/input.css", projectPath, cmdWebPath), inputCssTemplate, 0o644)
+		err = os.WriteFile(fmt.Sprintf("%s/%s/styles/input.css", projectPath, cmdWebPath), inputCssTemplate, 0o644)
 		if err != nil {
 			return err
 		}
 
 		outputCssFile, err := os.Create(fmt.Sprintf("%s/%s/assets/css/output.css", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer outputCssFile.Close()
 
@@ -443,12 +461,11 @@ func (p *Project) CreateMainFile() error {
 		// create folders and hello world file
 		err = p.CreatePath(cmdWebPath, projectPath)
 		if err != nil {
-			cobra.CheckErr(err)
 			return err
 		}
 		helloTemplFile, err := os.Create(fmt.Sprintf("%s/%s/hello.templ", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer helloTemplFile.Close()
 
@@ -461,7 +478,7 @@ func (p *Project) CreateMainFile() error {
 
 		baseTemplFile, err := os.Create(fmt.Sprintf("%s/%s/base.templ", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer baseTemplFile.Close()
 
@@ -473,12 +490,12 @@ func (p *Project) CreateMainFile() error {
 
 		err = os.MkdirAll(fmt.Sprintf("%s/%s/assets/js", projectPath, cmdWebPath), 0o755)
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 
 		htmxMinJsFile, err := os.Create(fmt.Sprintf("%s/%s/assets/js/htmx.min.js", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer htmxMinJsFile.Close()
 
@@ -488,9 +505,21 @@ func (p *Project) CreateMainFile() error {
 			return err
 		}
 
+		htmxTailwindConfigJsFile, err := os.Create(fmt.Sprintf("%s/tailwind.config.js", projectPath))
+		if err != nil {
+			return err
+		}
+		defer htmxTailwindConfigJsFile.Close()
+
+		htmxTailwindConfigJsTemplate := advanced.HtmxTailwindConfigJsTemplate()
+		err = os.WriteFile(fmt.Sprintf("%s/tailwind.config.js", projectPath), htmxTailwindConfigJsTemplate, 0o644)
+		if err != nil {
+			return err
+		}
+
 		efsFile, err := os.Create(fmt.Sprintf("%s/%s/efs.go", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer efsFile.Close()
 
@@ -501,13 +530,13 @@ func (p *Project) CreateMainFile() error {
 		}
 		err = utils.GoGetPackage(projectPath, templPackage)
 		if err != nil {
-			log.Printf("Could not install go dependency %v\n", err)
-			cobra.CheckErr(err)
+			log.Println("Could not install go dependency")
+			return err
 		}
 
 		helloGoFile, err := os.Create(fmt.Sprintf("%s/%s/hello.go", projectPath, cmdWebPath))
 		if err != nil {
-			cobra.CheckErr(err)
+			return err
 		}
 		defer efsFile.Close()
 
@@ -519,8 +548,8 @@ func (p *Project) CreateMainFile() error {
 			}
 			err = utils.GoGetPackage(projectPath, []string{"github.com/gofiber/fiber/v2/middleware/adaptor"})
 			if err != nil {
-				log.Printf("Could not install go dependency %v\n", err)
-				cobra.CheckErr(err)
+				log.Println("Could not install go dependency")
+				return err
 			}
 		} else {
 			helloGoTemplate := template.Must(template.New("efs").Parse((string(advanced.HelloGoTemplate()))))
@@ -538,28 +567,24 @@ func (p *Project) CreateMainFile() error {
 		err = p.CreatePath(gitHubActionPath, projectPath)
 		if err != nil {
 			log.Printf("Error creating path: %s", gitHubActionPath)
-			cobra.CheckErr(err)
 			return err
 		}
 
 		err = p.CreateFileWithInjection(gitHubActionPath, projectPath, "release.yml", "releaser")
 		if err != nil {
 			log.Printf("Error injecting release.yml file: %v", err)
-			cobra.CheckErr(err)
 			return err
 		}
 
 		err = p.CreateFileWithInjection(gitHubActionPath, projectPath, "go-test.yml", "go-test")
 		if err != nil {
 			log.Printf("Error injecting go-test.yml file: %v", err)
-			cobra.CheckErr(err)
 			return err
 		}
 
 		err = p.CreateFileWithInjection(root, projectPath, ".goreleaser.yml", "releaser-config")
 		if err != nil {
 			log.Printf("Error injecting .goreleaser.yml file: %v", err)
-			cobra.CheckErr(err)
 			return err
 		}
 	}
@@ -572,37 +597,63 @@ func (p *Project) CreateMainFile() error {
 		p.CreateWebsocketImports(projectPath)
 	}
 
+	if p.AdvancedOptions[string(flags.Docker)] {
+		Dockerfile, err := os.Create(filepath.Join(projectPath, "Dockerfile"))
+		if err != nil {
+			return err
+		}
+		defer Dockerfile.Close()
+
+		// inject Docker template
+		dockerfileTemplate := template.Must(template.New("Dockerfile").Parse(string(advanced.Dockerfile())))
+		err = dockerfileTemplate.Execute(Dockerfile, p)
+		if err != nil {
+			return err
+		}
+
+		if p.DBDriver == "none" || p.DBDriver == "sqlite" {
+
+			Dockercompose, err := os.Create(filepath.Join(projectPath, "docker-compose.yml"))
+			if err != nil {
+				return err
+			}
+			defer Dockercompose.Close()
+
+			// inject DockerCompose template
+			dockerComposeTemplate := template.Must(template.New("docker-compose.yml").Parse(string(advanced.DockerCompose())))
+			err = dockerComposeTemplate.Execute(Dockercompose, p)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	err = p.CreateFileWithInjection(internalServerPath, projectPath, "routes.go", "routes")
 	if err != nil {
 		log.Printf("Error injecting routes.go file: %v", err)
-		cobra.CheckErr(err)
 		return err
 	}
+
+	err = p.CreateFileWithInjection(internalServerPath, projectPath, "routes_test.go", "tests")
+	if err != nil {
+		return err
+	}
+
 	err = p.CreateFileWithInjection(internalServerPath, projectPath, "server.go", "server")
 	if err != nil {
 		log.Printf("Error injecting server.go file: %v", err)
-		cobra.CheckErr(err)
 		return err
 	}
 
 	err = p.CreateFileWithInjection(root, projectPath, ".env", "env")
 	if err != nil {
 		log.Printf("Error injecting .env file: %v", err)
-		cobra.CheckErr(err)
 		return err
 	}
 
-	// Initialize git repo
-	err = utils.ExecuteCmd("git", []string{"init"}, projectPath)
-	if err != nil {
-		log.Printf("Error initializing git repo: %v", err)
-		cobra.CheckErr(err)
-		return err
-	}
 	// Create gitignore
 	gitignoreFile, err := os.Create(filepath.Join(projectPath, ".gitignore"))
 	if err != nil {
-		cobra.CheckErr(err)
 		return err
 	}
 	defer gitignoreFile.Close()
@@ -617,7 +668,6 @@ func (p *Project) CreateMainFile() error {
 	// Create .air.toml file
 	airTomlFile, err := os.Create(filepath.Join(projectPath, ".air.toml"))
 	if err != nil {
-		cobra.CheckErr(err)
 		return err
 	}
 
@@ -633,28 +683,48 @@ func (p *Project) CreateMainFile() error {
 	err = utils.GoTidy(projectPath)
 	if err != nil {
 		log.Printf("Could not go tidy in new project %v\n", err)
-		cobra.CheckErr(err)
+		return err
 	}
 
 	err = utils.GoFmt(projectPath)
 	if err != nil {
 		log.Printf("Could not gofmt in new project %v\n", err)
-		cobra.CheckErr(err)
 		return err
 	}
-	// Git add files
-	err = utils.ExecuteCmd("git", []string{"add", "."}, projectPath)
-	if err != nil {
-		log.Printf("Error adding files to git repo: %v", err)
-		cobra.CheckErr(err)
-		return err
-	}
-	// Git commit files
-	err = utils.ExecuteCmd("git", []string{"commit", "-m", "Initial commit"}, projectPath)
-	if err != nil {
-		log.Printf("Error committing files to git repo: %v", err)
-		cobra.CheckErr(err)
-		return err
+
+	if p.GitOptions != flags.Skip {
+		nameSet, err := utils.CheckGitConfig("user.name")
+		if err != nil {
+			return err
+		}
+
+		if !nameSet {
+			fmt.Println("user.name is not set in git config.")
+			fmt.Println("Please set up git config before trying again.")
+			panic("\nGIT CONFIG ISSUE: user.name is not set in git config.\n")
+		}
+		// Initialize git repo
+		err = utils.ExecuteCmd("git", []string{"init"}, projectPath)
+		if err != nil {
+			log.Printf("Error initializing git repo: %v", err)
+			return err
+		}
+
+		// Git add files
+		err = utils.ExecuteCmd("git", []string{"add", "."}, projectPath)
+		if err != nil {
+			log.Printf("Error adding files to git repo: %v", err)
+			return err
+		}
+
+		if p.GitOptions == flags.Commit {
+			// Git commit files
+			err = utils.ExecuteCmd("git", []string{"commit", "-m", "Initial commit"}, projectPath)
+			if err != nil {
+				log.Printf("Error committing files to git repo: %v", err)
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -709,6 +779,9 @@ func (p *Project) CreateFileWithInjection(pathToCreate string, projectPath strin
 	case "db-docker":
 		createdTemplate := template.Must(template.New(fileName).Parse(string(p.DockerMap[p.Docker].templater.Docker())))
 		err = createdTemplate.Execute(createdFile, p)
+	case "integration-tests":
+		createdTemplate := template.Must(template.New(fileName).Parse(string(p.DBDriverMap[p.DBDriver].templater.Tests())))
+		err = createdTemplate.Execute(createdFile, p)
 	case "tests":
 		createdTemplate := template.Must(template.New(fileName).Parse(string(p.FrameworkMap[p.ProjectType].templater.TestHandler())))
 		err = createdTemplate.Execute(createdFile, p)
@@ -730,6 +803,130 @@ func (p *Project) CreateFileWithInjection(pathToCreate string, projectPath strin
 
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (p *Project) CreateViteReactProject(projectPath string) error {
+	if err := checkNpmInstalled(); err != nil {
+		return err
+	}
+
+	originalDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+	defer func() {
+		if err := os.Chdir(originalDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to change back to original directory: %v\n", err)
+		}
+	}()
+
+	// change into the project directory to run vite command
+	err = os.Chdir(projectPath)
+	if err != nil {
+		fmt.Println("failed to change into project directory: %w", err)
+	}
+
+	// the interactive vite command will not work as we can't interact with it
+	fmt.Println("Installing create-vite (using cache if available)...")
+	cmd := exec.Command("npm", "create", "vite@latest", "frontend", "--",
+		"--template", "react-ts",
+		"--prefer-offline",
+		"--no-fund")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to use create-vite: %w", err)
+	}
+
+	frontendPath := filepath.Join(projectPath, "frontend")
+	if err := os.MkdirAll(frontendPath, 0755); err != nil {
+		return fmt.Errorf("failed to create frontend directory: %w", err)
+	}
+
+	if err := os.Chdir(frontendPath); err != nil {
+		return fmt.Errorf("failed to change to frontend directory: %w", err)
+	}
+
+	srcDir := filepath.Join(frontendPath, "src")
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		return fmt.Errorf("failed to create src directory: %w", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(srcDir, "App.tsx"), advanced.ReactAppfile(), 0644); err != nil {
+		return fmt.Errorf("failed to write App.tsx template: %w", err)
+	}
+
+	// Create the global `.env` file from the template
+	err = p.CreateFileWithInjection("", projectPath, ".env", "env")
+	if err != nil {
+		return fmt.Errorf("failed to create global .env file: %w", err)
+	}
+
+	// Read from the global `.env` file and create the frontend-specific `.env`
+	globalEnvPath := filepath.Join(projectPath, ".env")
+	vitePort := "8080" // Default fallback
+
+	// Read the global .env file
+	if data, err := os.ReadFile(globalEnvPath); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "PORT=") {
+				vitePort = strings.SplitN(line, "=", 2)[1] // Get the backend port value
+				break
+			}
+		}
+	}
+
+	// Use a template to generate the frontend .env file
+	frontendEnvContent := fmt.Sprintf("VITE_PORT=%s\n", vitePort)
+	if err := os.WriteFile(filepath.Join(frontendPath, ".env"), []byte(frontendEnvContent), 0644); err != nil {
+		return fmt.Errorf("failed to create frontend .env file: %w", err)
+	}
+
+	// Handle Tailwind configuration if selected
+	if p.AdvancedOptions[string(flags.Tailwind)] {
+		fmt.Println("Installing Tailwind dependencies (using cache if available)...")
+		cmd := exec.Command("npm", "install",
+			"--prefer-offline",
+			"--no-fund",
+			"tailwindcss@^4", "@tailwindcss/vite")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to install Tailwind: %w", err)
+		}
+
+		// Create the vite + react + Tailwind v4 configuration
+		if err := os.WriteFile(filepath.Join(frontendPath, "vite.config.ts"), advanced.ViteTailwindConfigFile(), 0644); err != nil {
+			return fmt.Errorf("failed to write vite.config.ts: %w", err)
+		}
+
+		srcDir := filepath.Join(frontendPath, "src")
+		if err := os.MkdirAll(srcDir, 0755); err != nil {
+			return fmt.Errorf("failed to create src directory: %w", err)
+		}
+
+		err = os.WriteFile(filepath.Join(srcDir, "index.css"), advanced.InputCssTemplateReact(), 0644)
+		if err != nil {
+			return fmt.Errorf("failed to update index.css: %w", err)
+		}
+
+		if err := os.WriteFile(filepath.Join(srcDir, "App.tsx"), advanced.ReactTailwindAppfile(), 0644); err != nil {
+			return fmt.Errorf("failed to write App.tsx template: %w", err)
+		}
+
+		if err := os.Remove(filepath.Join(srcDir, "App.css")); err != nil {
+			// Don't return error if file doesn't exist
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("failed to remove App.css: %w", err)
+			}
+		}
+
+		// set to false to not re-do in next step
+		p.AdvancedOptions[string(flags.Tailwind)] = false
 	}
 
 	return nil
@@ -766,7 +963,7 @@ func (p *Project) CreateHtmxTemplates() {
 }
 
 func (p *Project) CreateWebsocketImports(appDir string) {
-	websocketDependency := []string{"nhooyr.io/websocket"}
+	websocketDependency := []string{"github.com/coder/websocket"}
 	if p.ProjectType == flags.Fiber {
 		websocketDependency = []string{"github.com/gofiber/contrib/websocket"}
 	}
@@ -792,4 +989,12 @@ func (p *Project) CreateWebsocketImports(appDir string) {
 	}
 	newImports := strings.Join([]string{string(p.AdvancedTemplates.TemplateImports), importBuffer.String()}, "\n")
 	p.AdvancedTemplates.TemplateImports = newImports
+}
+
+func checkNpmInstalled() error {
+	cmd := exec.Command("npm", "--version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("npm is not installed: %w", err)
+	}
+	return nil
 }

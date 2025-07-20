@@ -3,15 +3,17 @@ Tailwind is closely coupled with the advanced HTMX flag, and HTMX will be automa
 We do not introduce outside dependencies automatically, and you need compile output.css (file is empty by default) with the Tailwind CLI tool.
 
 The project tree would look like this:
+
 ```bash
 / (Root)
 ├── cmd/
 │   ├── api/
 │   │   └── main.go
 │   └── web/
+│       ├── styles/
+│       │   └── input.css
 │       ├── assets/
 │       │   ├── css/
-│       │   │   ├── input.css
 │       │   │   └── output.css
 │       │   └── js/
 │       │       └── htmx.min.js
@@ -24,38 +26,53 @@ The project tree would look like this:
 ├── internal/
 │   └── server/
 │       ├── routes.go
+│       ├── routes_test.go
 │       └── server.go
-├── tests/
-│   └── handler_test.go
 ├── go.mod
 ├── go.sum
 ├── Makefile
-├── README.md
-└── tailwind.config.js
+└── README.md
 ```
 
 ## Standalone Tailwind CLI
 
-The idea is not to use Node.js and npm to build `output.css`. To achieve this, visit the [official repository](https://github.com/tailwindlabs/tailwindcss/releases/latest) and download the latest release version for your OS and Arch:
+The idea is to avoid using Node.js and npm to build output.css.
+
+The Makefile will have entries for downloading and compiling CSS. It will automatically detect the OS and download the latest release from the [official repository](https://github.com/tailwindlabs/tailwindcss/releases).
+
+## Linux Makefile Example
 
 ```bash
-curl -sLO https://github.com/tailwindlabs/tailwindcss/releases/download/v3.4.4/tailwindcss-linux-x64
-```
+all: build
+templ-install:
+	@if ! command -v templ > /dev/null; then \
+		read -p "Go's 'templ' is not installed on your machine. Do you want to install it? [Y/n] " choice; \
+		if [ "$$choice" != "n" ] && [ "$$choice" != "N" ]; then \
+			go install github.com/a-h/templ/cmd/templ@latest; \
+			if [ ! -x "$$(command -v templ)" ]; then \
+				echo "templ installation failed. Exiting..."; \
+				exit 1; \
+			fi; \
+		else \
+			echo "You chose not to install templ. Exiting..."; \
+			exit 1; \
+		fi; \
+	fi
 
-Give execution permission:
+tailwind-install:
+	@if [ ! -f tailwindcss ]; then curl -sL https://github.com/tailwindlabs/tailwindcss/releases/latest/download/tailwindcss-linux-x64 -o tailwindcss; fi
+	@chmod +x tailwindcss
 
-```bash
-chmod +x tailwindcss-linux-x64
-```
-
-## Compile and minify your CSS
-
-```bash
-./tailwindcss-linux-x64 -i cmd/web/assets/css/input.css -o cmd/web/assets/css/output.css
+build: tailwind-install templ-install
+	@echo "Building..."
+	@templ generate
+	@./tailwindcss -i cmd/web/styles/input.css -o cmd/web/assets/css/output.css
+	@go build -o main cmd/api/main.go
 ```
 
 ## Use Tailwind CSS in your project
 
-By default, CSS examples are not included in the codebase.
-Update base.templ and hello.templ, then rerun templ generate to see the changes at the localhost:PORT/web endpoint.
+By default, simple CSS examples are included in the codebase.
+Update base.templ and hello.templ, then rerun templ generate to see the changes at the `localhost:PORT/web` endpoint.
 
+![Tailwind](../public/tailwind.png)

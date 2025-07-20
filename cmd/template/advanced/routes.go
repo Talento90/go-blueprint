@@ -10,14 +10,26 @@ var helloTemplTemplate []byte
 //go:embed files/htmx/base.templ.tmpl
 var baseTemplTemplate []byte
 
-//go:embed files/tailwind/tailwind.config.js.tmpl
-var tailwindConfigTemplate []byte
+//go:embed files/react/tailwind/index.css.tmpl
+var inputCssTemplateReact []byte
+
+//go:embed files/react/tailwind/vite.config.ts.tmpl
+var viteTailwindConfigFile []byte
+
+//go:embed files/react/tailwind/app.tsx.tmpl
+var reactTailwindAppFile []byte
+
+//go:embed files/react/app.tsx.tmpl
+var reactAppFile []byte
 
 //go:embed files/tailwind/input.css.tmpl
 var inputCssTemplate []byte
 
 //go:embed files/tailwind/output.css.tmpl
 var outputCssTemplate []byte
+
+//go:embed files/htmx/tailwind/tailwind.config.js.tmpl
+var htmxTailwindConfigJsTemplate []byte
 
 //go:embed files/htmx/htmx.min.js.tmpl
 var htmxMinJsTemplate []byte
@@ -48,6 +60,9 @@ var chiHtmxTemplRoutes []byte
 
 //go:embed files/htmx/routes/gin.tmpl
 var ginHtmxTemplRoutes []byte
+
+//go:embed files/htmx/imports/gin.tmpl
+var ginHtmxTemplImports []byte
 
 //go:embed files/htmx/routes/gorilla.tmpl
 var gorillaHtmxTemplRoutes []byte
@@ -104,8 +119,20 @@ func BaseTemplTemplate() []byte {
 	return baseTemplTemplate
 }
 
-func TailwindConfigTemplate() []byte {
-	return tailwindConfigTemplate
+func ReactTailwindAppfile() []byte {
+	return reactTailwindAppFile
+}
+
+func ReactAppfile() []byte {
+	return reactAppFile
+}
+
+func InputCssTemplateReact() []byte {
+	return inputCssTemplateReact
+}
+
+func ViteTailwindConfigFile() []byte {
+	return viteTailwindConfigFile
 }
 
 func InputCssTemplate() []byte {
@@ -114,6 +141,10 @@ func InputCssTemplate() []byte {
 
 func OutputCssTemplate() []byte {
 	return outputCssTemplate
+}
+
+func HtmxTailwindConfigJsTemplate() []byte {
+	return htmxTailwindConfigJsTemplate
 }
 
 func HtmxJSTemplate() []byte {
@@ -142,4 +173,8 @@ func FiberHtmxTemplImportsTemplate() []byte {
 
 func FiberWebsocketTemplImportsTemplate() []byte {
 	return fiberWebsocketTemplImports
+}
+
+func GinHtmxTemplImportsTemplate() []byte {
+	return ginHtmxTemplImports
 }

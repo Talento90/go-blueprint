@@ -83,6 +83,9 @@ func InitSteps(projectType flags.Framework, databaseType flags.Database) *Steps 
 						Title: "Redis",
 						Desc:  "Redis driver for Go."},
 					{
+						Title: "Scylla",
+						Desc:  "ScyllaDB Enhanced driver from GoCQL."},
+					{
 						Title: "None",
 						Desc:  "Choose this option if you don't wish to install a specific database driver."},
 				},
@@ -94,9 +97,14 @@ func InitSteps(projectType flags.Framework, databaseType flags.Database) *Steps 
 				Headers:  "Which advanced features do you want?",
 				Options: []Item{
 					{
+						Flag:  "React",
+						Title: "React",
+						Desc:  "Use Vite to spin up a React project in TypeScript. This disables selecting HTMX/Templ",
+					},
+					{
 						Flag:  "Htmx",
 						Title: "HTMX/Templ",
-						Desc:  "Add starter HTMX and Templ files.",
+						Desc:  "Add starter HTMX and Templ files. This disables selecting React",
 					},
 					{
 						Flag:  "GitHubAction",
@@ -111,7 +119,30 @@ func InitSteps(projectType flags.Framework, databaseType flags.Database) *Steps 
 					{
 						Flag:  "Tailwind",
 						Title: "TailwindCSS",
-						Desc:  "A utility-first CSS framework (selecting this will automatically add HTMX)",
+						Desc:  "A utility-first CSS framework (selecting this will automatically add HTMX unless React is specified)",
+					},
+					{
+						Flag:  "Docker",
+						Title: "Docker",
+						Desc:  "Dockerfile and docker-compose generic configuration for go project",
+					},
+				},
+			},
+			"git": {
+				StepName: "Git Repository",
+				Headers:  "Which git option would you like to select for your project?",
+				Options: []Item{
+					{
+						Title: "Commit",
+						Desc:  "Initialize a new git repository and commit all the changes",
+					},
+					{
+						Title: "Stage",
+						Desc:  "Initialize a new git repository but only stage the changes",
+					},
+					{
+						Title: "Skip",
+						Desc:  "Proceed without initializing a git repository",
 					},
 				},
 			},

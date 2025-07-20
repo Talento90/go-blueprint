@@ -43,6 +43,7 @@ func init() {
 	var flagFramework flags.Framework
 	var flagDBDriver flags.Database
 	var advancedFeatures flags.AdvancedFeatures
+	var flagGit flags.Git
 	rootCmd.AddCommand(createCmd)
 
 	createCmd.Flags().StringP("name", "n", "", "Name of project to create")
@@ -50,6 +51,12 @@ func init() {
 	createCmd.Flags().VarP(&flagDBDriver, "driver", "d", fmt.Sprintf("Database drivers to use. Allowed values: %s", strings.Join(flags.AllowedDBDrivers, ", ")))
 	createCmd.Flags().BoolP("advanced", "a", false, "Get prompts for advanced features")
 	createCmd.Flags().Var(&advancedFeatures, "feature", fmt.Sprintf("Advanced feature to use. Allowed values: %s", strings.Join(flags.AllowedAdvancedFeatures, ", ")))
+	createCmd.Flags().VarP(&flagGit, "git", "g", fmt.Sprintf("Git to use. Allowed values: %s", strings.Join(flags.AllowedGitsOptions, ", ")))
+
+	utils.RegisterStaticCompletions(createCmd, "framework", flags.AllowedProjectTypes)
+	utils.RegisterStaticCompletions(createCmd, "driver", flags.AllowedDBDrivers)
+	utils.RegisterStaticCompletions(createCmd, "feature", flags.AllowedAdvancedFeatures)
+	utils.RegisterStaticCompletions(createCmd, "git", flags.AllowedGitsOptions)
 }
 
 type Options struct {
@@ -58,6 +65,7 @@ type Options struct {
 	DBDriver    *multiInput.Selection
 	Advanced    *multiSelect.Selection
 	Workflow    *multiInput.Selection
+	Git         *multiInput.Selection
 }
 
 // createCmd defines the "create" command for the CLI
@@ -72,8 +80,15 @@ var createCmd = &cobra.Command{
 
 		isInteractive := false
 		flagName := cmd.Flag("name").Value.String()
-		if flagName != "" && doesDirectoryExistAndIsNotEmpty(flagName) {
-			err = fmt.Errorf("directory '%s' already exists and is not empty. Please choose a different name", flagName)
+
+		if flagName != "" && !utils.ValidateModuleName(flagName) {
+			err = fmt.Errorf("'%s' is not a valid module name. Please choose a different name", flagName)
+			cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
+		}
+
+		rootDirName := utils.GetRootDir(flagName)
+		if rootDirName != "" && doesDirectoryExistAndIsNotEmpty(rootDirName) {
+			err = fmt.Errorf("directory '%s' already exists and is not empty. Please choose a different name", rootDirName)
 			cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
 		}
 
@@ -81,6 +96,7 @@ var createCmd = &cobra.Command{
 		// If this flag is filled, it is always valid
 		flagFramework := flags.Framework(cmd.Flag("framework").Value.String())
 		flagDBDriver := flags.Database(cmd.Flag("driver").Value.String())
+		flagGit := flags.Git(cmd.Flag("git").Value.String())
 
 		options := Options{
 			ProjectName: &textinput.Output{},
@@ -89,6 +105,7 @@ var createCmd = &cobra.Command{
 			Advanced: &multiSelect.Selection{
 				Choices: make(map[string]bool),
 			},
+			Git: &multiInput.Selection{},
 		}
 
 		project := &program.Project{
@@ -98,6 +115,7 @@ var createCmd = &cobra.Command{
 			FrameworkMap:    make(map[flags.Framework]program.Framework),
 			DBDriverMap:     make(map[flags.Database]program.Driver),
 			AdvancedOptions: make(map[string]bool),
+			GitOptions:      flagGit,
 		}
 
 		steps := steps.InitSteps(flagFramework, flagDBDriver)
@@ -120,8 +138,15 @@ var createCmd = &cobra.Command{
 				log.Printf("Name of project contains an error: %v", err)
 				cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
 			}
-			if doesDirectoryExistAndIsNotEmpty(options.ProjectName.Output) {
-				err = fmt.Errorf("directory '%s' already exists and is not empty. Please choose a different name", options.ProjectName.Output)
+
+			if options.ProjectName.Output != "" && !utils.ValidateModuleName(options.ProjectName.Output) {
+				err = fmt.Errorf("'%s' is not a valid module name. Please choose a different name", options.ProjectName.Output)
+				cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
+			}
+
+			rootDirName = utils.GetRootDir(options.ProjectName.Output)
+			if doesDirectoryExistAndIsNotEmpty(rootDirName) {
+				err = fmt.Errorf("directory '%s' already exists and is not empty. Please choose a different name", rootDirName)
 				cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
 			}
 			project.ExitCLI(tprogram)
@@ -202,6 +227,22 @@ var createCmd = &cobra.Command{
 
 		}
 
+		if project.GitOptions == "" {
+			isInteractive = true
+			step := steps.Steps["git"]
+			tprogram = tea.NewProgram(multiInput.InitialModelMulti(step.Options, options.Git, step.Headers, project))
+			if _, err := tprogram.Run(); err != nil {
+				cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
+			}
+			project.ExitCLI(tprogram)
+
+			project.GitOptions = flags.Git(strings.ToLower(options.Git.Choice))
+			err := cmd.Flag("git").Value.Set(project.GitOptions.String())
+			if err != nil {
+				log.Fatal("failed to set the git flag value", err)
+			}
+		}
+
 		currentWorkingDir, err := os.Getwd()
 		if err != nil {
 			log.Printf("could not get current working directory: %v", err)
@@ -237,12 +278,20 @@ var createCmd = &cobra.Command{
 			if releaseErr := spinner.ReleaseTerminal(); releaseErr != nil {
 				log.Printf("Problem releasing terminal: %v", releaseErr)
 			}
-			log.Printf("Problem creating files for project. %v", err)
+			log.Printf("Problem creating files for project.")
 			cobra.CheckErr(textinput.CreateErrorInputModel(err).Err())
 		}
 
 		fmt.Println(endingMsgStyle.Render("\nNext steps:"))
-		fmt.Println(endingMsgStyle.Render(fmt.Sprintf("• cd into the newly created project with: `cd %s`\n", project.ProjectName)))
+		fmt.Println(endingMsgStyle.Render(fmt.Sprintf("• cd into the newly created project with: `cd %s`\n", utils.GetRootDir(project.ProjectName))))
+
+		if options.Advanced.Choices["React"] {
+			options.Advanced.Choices["Htmx"] = false
+			options.Advanced.Choices["Tailwind"] = false
+			fmt.Println(endingMsgStyle.Render("• cd into frontend\n"))
+			fmt.Println(endingMsgStyle.Render("• npm install\n"))
+			fmt.Println(endingMsgStyle.Render("• npm run dev\n"))
+		}
 
 		if options.Advanced.Choices["Tailwind"] {
 			options.Advanced.Choices["Htmx"] = true
@@ -251,6 +300,7 @@ var createCmd = &cobra.Command{
 		}
 
 		if options.Advanced.Choices["Htmx"] {
+			options.Advanced.Choices["react"] = false
 			fmt.Println(endingMsgStyle.Render("• Install the templ cli if you haven't already by running `go install github.com/a-h/templ/cmd/templ@latest`\n"))
 			fmt.Println(endingMsgStyle.Render("• Generate templ function files by running `templ generate`\n"))
 		}
